@@ -1,5 +1,5 @@
 import argparse
-import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from collections import namedtuple
 import time
@@ -20,8 +20,28 @@ def create_argument_parser():
     command_group.add_argument(
         'command',
         choices=['run'],
+        help=(
+            'Run until interrupted.'
+            ' While running, a post is made every 5 minutes'
+            ' using the top hashtag from twitter\'s "trending" API.'
+            ' The same hashtag will not be used more than once'
+            ' during a session, but this history is not saved'
+            ' between executions of the "run" command.'
+        ),
     )
-    auth_group = parser.add_argument_group('Auth Credentials')
+    command_group.add_argument(
+        '--ignore',
+        nargs='*',
+        help=(
+            'A list of any number of hashtags to ignore completely.'
+            ' Tags can be of the form "DaftPunk" or "#DaftPunk"'
+            ' -- these are considered equal.'
+        ),
+    )
+    auth_group = parser.add_argument_group(
+        'Auth Credentials',
+        description='These arguments are required for all API access.'
+    )
     auth_group.add_argument(
         '--consumer-key',
         required=True,
@@ -48,8 +68,9 @@ def run_forever(args):
         access_token_key=args.access_token_key,
         access_token_secret=args.access_token_secret,
     )
-    hash_poster = HashPoster(api)
-    delay_delta = datetime.timedelta(minutes=5)
+    print(f'Will ignore tags: {args.ignore}')
+    hash_poster = HashPoster(api, ignored_tags=args.ignore)
+    delay_delta = timedelta(minutes=5)
     while True:
         if delay_delta > hash_poster.get_time_since_last_post():
             sleep_delta(delay_delta)
@@ -108,10 +129,13 @@ class HashPoster:
         ('hashtag', 'hashtag_hash', 'post_time')
     )
 
-    def __init__(self, api):
+    def __init__(self, api, ignored_tags=None):
         self.api = api
         self.last_post = None
         self.post_history = {}
+        self.ignored_tags = set()
+        if ignored_tags is not None:
+            self.ignored_tags.update(Hashtag(tag).tag for tag in ignored_tags)
 
     def get_trending_hashtags(self):
         trends = self.api.GetTrendsCurrent()
@@ -119,7 +143,8 @@ class HashPoster:
             hashtag
             for hashtag in map(self.get_hashtag_from_trend, trends)
             if hashtag is not None
-            and hashtag not in self.post_history
+            and hashtag.tag not in self.post_history
+            and hashtag.tag not in self.ignored_tags
         ]
         return hashtags
 
@@ -137,7 +162,7 @@ class HashPoster:
             hashtag_hash,
             datetime.now(),
         )
-        self.post_history[hashtag] = self.last_post
+        self.post_history[hashtag.tag] = self.last_post
         return self.last_post
 
     def format_post(self, original, hashed):
@@ -145,7 +170,7 @@ class HashPoster:
 
     def get_time_since_last_post(self):
         if self.last_post is None:
-            return datetime.timedelta.max
+            return timedelta.max
         return datetime.now() - self.last_post.post_time
 
     @classmethod
